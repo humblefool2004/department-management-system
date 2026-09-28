@@ -1,56 +1,58 @@
-# College Management System
+# Department Management System
 
-A Spring Boot REST API that models a college with **students, professors, subjects and admission records**. The project focuses on **JPA entity relationships** (OneToOne, OneToMany, ManyToOne, ManyToMany), including correct handling of the owning side and clean deletes.
+A layered REST API for managing college departments, built with Spring Boot. It supports full CRUD, including both **PUT** (full update) and **PATCH** (partial update), with request validation and consistent error responses.
 
 ## Tech Stack
 
-- Java (version set in `pom.xml`)
-- Spring Boot 4.1.0 (Spring Web MVC)
+- Java 21
+- Spring Boot 4.0.6 (Spring Web MVC)
 - Spring Data JPA / Hibernate
 - MySQL
-- Jakarta Bean Validation
+- MapStruct (entity ↔ DTO mapping)
+- Jakarta Bean Validation (plus a custom constraint)
 - Lombok
 - Spring Boot Actuator
 - springdoc-openapi (Swagger UI)
 - Maven
 
-## Data Model
-
-| Relationship | Type | Owning side | Notes |
-|--------------|------|-------------|-------|
-| Student ↔ Professor | ManyToMany | `Student` | Join table `student_professor` |
-| Subject ↔ Student | ManyToMany | `Subject` | Join table `subject_student` |
-| Subject → Professor | ManyToOne | `Subject` | Foreign key `professor_id` on `Subject` |
-| AdmissionRecord → Student | OneToOne | `AdmissionRecord` | Unique foreign key `student_id`; removing a student cascades to its record |
-
-Hibernate only writes the **owning side** of a relationship to the database, so the service layer always updates the owning side when linking entities.
-
 ## Features
 
-- Layered architecture: Controller → Service → Repository, with DTOs so entities are never exposed
-- All relationships lazily fetched
-- **Clean deletes:** the service unlinks inverse-side associations before deleting a student or professor, so no foreign key violations or orphaned join rows
-- One admission record per student, enforced in the service and by a database unique constraint
-- Bean Validation on request bodies
-- Custom exceptions with a global `@RestControllerAdvice` handler
-- SLF4J logging, Actuator health and metrics endpoints, and Swagger UI
+- **Layered architecture:** Controller → Service → Repository
+- **DTOs as Java records**, so JPA entities are never exposed through the API
+- **MapStruct mappers** for create, full update (PUT) and partial update (PATCH). PATCH ignores null fields, so only the fields sent are changed
+- **Validation** with standard annotations (`@NotBlank`, `@Email`, `@Size`, `@Pattern`, `@PositiveOrZero`) and a **custom `@PrimeNumberValidation`** constraint
+- **Centralized error handling** with `@RestControllerAdvice`
+- **Uniform response wrapper** (`ApiResponse`) for both success and error responses
+- **Actuator** health and metrics endpoints, and **SLF4J logging** in the service layer
+- **Swagger UI** for interactive API documentation
 
 ## API Endpoints
 
+Base path: `/departments`
+
 | Method | Endpoint | Description | Success |
 |--------|----------|-------------|---------|
-| POST | `/students` | Create a student | 201 |
-| GET | `/students/{studentId}` | Get a student | 200 |
-| DELETE | `/students/{studentId}` | Delete a student (and its admission record) | 204 |
-| POST | `/students/professors` | Create a professor | 201 |
-| GET | `/students/professors/{professorId}` | Get a professor | 200 |
-| DELETE | `/students/professors/{professorId}` | Delete a professor | 204 |
-| POST | `/students/subjects` | Create a subject | 201 |
-| GET | `/students/subjects/{subjectId}` | Get a subject | 200 |
-| DELETE | `/students/subjects/{subjectId}` | Delete a subject | 204 |
-| POST | `/students/{studentId}/admission` | Create the student's admission record | 201 |
-| PUT | `/students/{studentId}/professors/{professorId}` | Link a student to a professor | 200 |
-| PUT | `/students/{studentId}/subjects/{subjectId}` | Link a subject to a student | 204 |
+| GET | `/departments` | List all departments | 200 |
+| GET | `/departments/{id}` | Get one department | 200 |
+| POST | `/departments` | Create a department | 201 |
+| PUT | `/departments/{id}` | Replace a department (all required fields) | 200 |
+| PATCH | `/departments/{id}` | Update only the fields sent | 200 |
+| DELETE | `/departments/{id}` | Delete a department | 204 |
+
+### Validation rules (create / PUT)
+
+| Field | Rule |
+|-------|------|
+| `departmentCode` | Required, 2–20 characters, unique |
+| `departmentName` | Required |
+| `contactEmail` | Required, valid email, unique |
+| `phoneNumber` | Optional, 10–15 digits, may start with `+` |
+| `budget` | Required, zero or positive |
+| `description` | Optional, max 500 characters |
+| `active` | Required |
+| `primeNumber` | Optional, must be a prime number (defaults to 2) |
+
+PATCH accepts the same fields, all optional.
 
 ### Error handling
 
@@ -58,27 +60,33 @@ Hibernate only writes the **owning side** of a relationship to the database, so 
 |-----------|--------|
 | Validation failed | 400 (with per-field `subErrors`) |
 | Malformed JSON or invalid path value | 400 |
-| Student / professor / subject not found | 404 |
-| Duplicate admission record or data constraint violation | 409 |
-| Anything unexpected | 500 (generic message, details logged) |
+| Department not found / unknown URL | 404 |
+| Duplicate department code or contact email | 409 |
+| Anything unexpected | 500 (generic message, details logged server-side) |
 
 Example error response:
 
 ```json
 {
-  "timestamp": "2026-09-28T15:22:44",
-  "status": 404,
-  "message": "Student not found with id: 99"
+  "localDateTime": "2026-09-28 15:22:44",
+  "data": null,
+  "error": {
+    "message": "Input validation failed",
+    "status": "BAD_REQUEST",
+    "subErrors": {
+      "contactEmail": "Contact email must be a valid email address"
+    }
+  }
 }
 ```
 
 ## Running Locally
 
-**Prerequisites:** JDK (see `pom.xml`), MySQL running locally.
+**Prerequisites:** JDK 21, MySQL running locally.
 
 1. Create the database:
    ```sql
-   CREATE DATABASE IF NOT EXISTS college_management;
+   CREATE DATABASE IF NOT EXISTS departmentdb;
    ```
 2. Set your database credentials as environment variables (nothing secret is stored in the repository):
    ```bash
@@ -97,13 +105,28 @@ The app runs on `http://localhost:8080`.
 | Swagger UI | `http://localhost:8080/swagger-ui.html` |
 | OpenAPI JSON | `http://localhost:8080/v3/api-docs` |
 | Health check | `http://localhost:8080/actuator/health` |
+| Metrics | `http://localhost:8080/actuator/metrics` |
 
-## Known Limitations and Next Steps
+## Project Structure
 
-- Professor and subject endpoints currently live under `/students`. They should move into separate controllers and services
-- No update (PUT/PATCH) endpoints for the base entities yet
-- No pagination
-- No automated tests
+```
+src/main/java/.../module02
+├── advices/        # GlobalExceptionHandler, response wrapper, ApiResponse / ApiError
+├── annotations/    # Custom @PrimeNumberValidation + validator
+├── controller/     # REST controller
+├── dto/            # Record-based request/response DTOs
+├── entities/       # JPA entity
+├── exceptions/     # ResourceNotFoundException
+├── mapper/         # MapStruct mapper
+├── repositories/   # Spring Data JPA repository
+└── services/       # Business logic
+```
+
+## Possible Improvements
+
+- Pagination and sorting on the list endpoint
+- Unit and integration tests
+- Authentication and authorization
 
 ## Author
 
